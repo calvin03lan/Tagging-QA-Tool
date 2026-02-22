@@ -1,0 +1,21 @@
+# PyInstaller files
+/build/
+/dist/
+*.spec
+
+# Python cache
+__pycache__/
+*.pyc
+
+# macOS files
+.DS_Store
+
+# User-generated data
+/Tag_QA_Files/
+
+# IDE specific files
+.vscode/
+.idea/
+
+# Temporary files
+temp_*.png

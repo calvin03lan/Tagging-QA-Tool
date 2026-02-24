@@ -28,7 +28,6 @@ class TaggingAutomationApp:
 
         # --- Constants & State ---
         self.LANG_MAP = {
-            "Generic": "gen",
             "Traditional Chinese": "tc",
             "Simplified Chinese": "sc",
             "English": "en"
@@ -49,7 +48,7 @@ class TaggingAutomationApp:
         self.update_timer = None
         self.active_filter_keyword = None
         self.last_clicked_keyword_index = None
-        self.urls = [{'url': 'https://www.google.com', 'lang': 'en'}] # Now a list of objects
+        self.urls = [{'url': 'https://www.google.com', 'lang': 'en', 'num': 1}] # Now a list of objects
         self.report_data = []
         
         # Undo/Redo stacks
@@ -182,7 +181,7 @@ class TaggingAutomationApp:
 
     def update_urls(self, new_urls):
         self.urls = new_urls
-        display_urls = [f"[{u['lang']}] {u['url']}" for u in self.urls]
+        display_urls = [f"[{u['num']}] [{u['lang']}] {u['url']}" for u in self.urls]
         self.url_combobox['values'] = display_urls
         if display_urls:
             self.url_combobox.set(display_urls[0])
@@ -195,24 +194,37 @@ class TaggingAutomationApp:
         self.root.attributes("-topmost", is_on_top)
 
     def setup_keyword_pane(self, parent_frame):
+        self.keyword_text_var = tk.StringVar()
         # Frame for keyword input
         keyword_input_frame = ttk.Frame(parent_frame)
         keyword_input_frame.pack(fill=tk.X, pady=(0, 5))
 
-        # Top row for entry and language selection
+        # Top row for keyword entry
         top_row_frame = ttk.Frame(keyword_input_frame)
-        top_row_frame.pack(fill=tk.X)
+        top_row_frame.pack(fill=tk.X, pady=(0, 5))
 
         ttk.Label(top_row_frame, text="Keyword:").pack(side=tk.LEFT, padx=(0, 5))
-        
-        self.keyword_text_var = tk.StringVar()
         self.keyword_entry = ttk.Entry(top_row_frame, textvariable=self.keyword_text_var)
         self.keyword_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        self.lang_var = tk.StringVar(value="Generic")
+        # Second row for ID, Num, and Language
+        second_row_frame = ttk.Frame(keyword_input_frame)
+        second_row_frame.pack(fill=tk.X)
+
+        ttk.Label(second_row_frame, text="ID:").pack(side=tk.LEFT, padx=(0,5))
+        self.button_id_var = tk.StringVar()
+        self.button_id_entry = ttk.Entry(second_row_frame, textvariable=self.button_id_var, width=15)
+        self.button_id_entry.pack(side=tk.LEFT, padx=(0,5))
+
+        self.keyword_num_var = tk.StringVar(value="1")
+        ttk.Label(second_row_frame, text="Num:").pack(side=tk.LEFT, padx=(5,0))
+        self.keyword_num_entry = ttk.Entry(second_row_frame, textvariable=self.keyword_num_var, width=5)
+        self.keyword_num_entry.pack(side=tk.LEFT, padx=(0,5))
+
+        self.lang_var = tk.StringVar(value="Traditional Chinese")
         lang_options = list(self.LANG_MAP.keys())
-        self.lang_combobox = ttk.Combobox(top_row_frame, textvariable=self.lang_var, values=lang_options, state="readonly", width=20)
-        self.lang_combobox.pack(side=tk.LEFT, padx=5)
+        self.lang_combobox = ttk.Combobox(second_row_frame, textvariable=self.lang_var, values=lang_options, state="readonly", width=20)
+        self.lang_combobox.pack(side=tk.RIGHT, padx=5)
         
         # Bottom row for the Add button
         add_button = ttk.Button(keyword_input_frame, text="Add", command=self.add_keyword)
@@ -238,6 +250,8 @@ class TaggingAutomationApp:
         # Bind auto-update traces
         self.keyword_text_var.trace_add("write", self.handle_keyword_update)
         self.lang_var.trace_add("write", self.handle_keyword_update)
+        self.keyword_num_var.trace_add("write", self.handle_keyword_update)
+        self.button_id_var.trace_add("write", self.handle_keyword_update)
 
         # Undo/Redo bindings
         self.root.bind("<Control-z>", self.undo_keywords)
@@ -545,6 +559,7 @@ class TaggingAutomationApp:
         url_str = url_obj['url']
         url_lang = url_obj['lang']
         user_data_dir = tempfile.mkdtemp()
+        clicked_button_ids_on_page = set()
         try:
             async with async_playwright() as p:
                 # 1. Launch Browser
@@ -573,24 +588,28 @@ class TaggingAutomationApp:
                 # 2. Wait for initial page load to settle
                 await self.wait_for_network_idle()
 
-                # 3. Run Element Test
-                self.update_status(f"Running element test on {url_str}...")
-                await self.async_run_test()
-
-                # 4. Wait for tests to settle
-                await self.wait_for_network_idle()
+                # 3. Element test is now done per keyword if a button_id is present.
 
                 # 5. Screenshot per relevant keyword
                 all_keyword_objects = self._get_keyword_objects()
                 relevant_keywords = [ 
                     kw for kw in all_keyword_objects 
-                    if kw['lang'] == url_lang or kw['lang'] == 'gen'
+                    if kw['lang'] == url_lang and kw.get('num', 1) == url_obj.get('num', 1)
                 ]
                 num_keywords = len(relevant_keywords)
 
                 for i, keyword_obj in enumerate(relevant_keywords):
                     keyword_text = keyword_obj['text']
                     keyword_lang = keyword_obj['lang']
+                    button_id = keyword_obj.get('button_id', '')
+
+                    self.update_status(f"Processing keyword {i+1}/{num_keywords}: '{keyword_text}'...")
+
+                    if button_id and button_id not in clicked_button_ids_on_page:
+                        await self.click_button_by_id(button_id)
+                        clicked_button_ids_on_page.add(button_id)
+                        await self.wait_for_network_idle()
+
                     self.update_status(f"Capturing keyword {i+1}/{num_keywords}: '{keyword_text}' for URL lang '{url_lang}'...")
                     
                     select_keyword_event = threading.Event()
@@ -676,20 +695,14 @@ class TaggingAutomationApp:
     async def async_run_test(self):
         page = self.playwright_page
         original_url = page.url # Save the main page URL
-        self.add_test_log("Starting element test...", "START")
 
         modifier = "Meta" if sys.platform == "darwin" else "Control"
 
         elements_to_test = await page.locator('button, a[href]').all()
-        self.add_test_log(f"Found {len(elements_to_test)} clickable elements.", "INFO")
 
         for i, element in enumerate(elements_to_test):
             try:
                 if await element.is_visible() and await element.is_enabled():
-                    text = await element.inner_text() or "[no text]"
-                    text = text.strip().replace('\n', ' ')
-                    self.add_test_log(f"({i+1}/{len(elements_to_test)}) Clicking: '{text[:30]}...'", "ACTION")
-                    
                     href = await element.get_attribute('href')
                     target = await element.get_attribute('target')
 
@@ -697,7 +710,6 @@ class TaggingAutomationApp:
 
                     if is_navigation_link and target == '_blank':
                         # Case 1: Link opens a new tab explicitly (target="_blank")
-                        self.add_test_log("Link opens new tab. Will clean up later.", "INFO")
                         await element.click(timeout=5000)
                         await page.wait_for_timeout(2990)
                         await self._close_extra_tabs(original_url)
@@ -705,7 +717,6 @@ class TaggingAutomationApp:
 
                     elif is_navigation_link:
                         # Case 2: Link navigates in the same tab
-                        self.add_test_log("Navigation link. Opening in new tab to preserve context.", "NAV")
                         await element.click(modifiers=[modifier])
                         await page.wait_for_timeout(2990)
                         await self._close_extra_tabs(original_url)
@@ -715,14 +726,11 @@ class TaggingAutomationApp:
                         await element.click(timeout=5000)
                         await page.wait_for_timeout(3000)
 
-                else:
-                    self.add_test_log(f"Skipping non-visible/disabled element {i+1}.", "SKIP")
             except Exception as e:
-                self.add_test_log(f"Error clicking element {i+1}: {e}", "ERROR")
+                print(f"Error clicking element {i+1}: {e}")
         
         # Final cleanup at the end of the test
         await self._close_extra_tabs(original_url)
-        self.add_test_log("Element test finished.", "END")
 
     async def _close_extra_tabs(self, original_url):
         if not self.browser_context:
@@ -731,18 +739,30 @@ class TaggingAutomationApp:
         pages_to_close = [p for p in self.browser_context.pages if p.url != original_url and not p.is_closed()]
         
         if pages_to_close:
-            self.add_test_log(f"Closing {len(pages_to_close)} extra tab(s).", "CLEANUP")
             for p in pages_to_close:
                 await p.close()
 
-    def add_test_log(self, message, log_type):
-        timestamp = datetime.now().strftime("%H:%M:%S %d/%m/%Y")
-        current_url = self.url_var.get()
-        url_hash = str(hash(current_url))[-8:] if current_url else "N/A"
-        # Columns: "name", "status", "method", "type", "size", "time", "url_hash"
-        log_entry = (f"Test: {message}", log_type, "- / -", "ElementTest", "N/A", timestamp, url_hash)
-        
-        self.root.after(0, self.insert_log, log_entry)
+    async def click_button_by_id(self, button_id):
+        if not self.playwright_page or self.playwright_page.is_closed():
+            return
+
+        try:
+            button_selector = f"#{button_id}"
+            element = self.playwright_page.locator(button_selector).first
+            
+            if await element.count() == 0:
+                return
+
+            if not await element.is_visible():
+                return
+
+            if not await element.is_enabled():
+                return
+
+            await element.click(timeout=5000)
+
+        except Exception as e:
+            print(f"Error clicking element with ID '{button_id}': {e}")
 
     def clear_all(self):
         """Clears all logs and keywords."""
@@ -761,7 +781,7 @@ class TaggingAutomationApp:
         if not selection_indices:
             # Clicked on empty space: clear inputs and filter
             self.keyword_text_var.set("")
-            self.lang_var.set("Generic")
+            self.lang_var.set("Traditional Chinese")
             if self.active_filter_keyword:
                 self.active_filter_keyword = None
                 self._refresh_log_view()
@@ -772,7 +792,9 @@ class TaggingAutomationApp:
             keyword_obj = self._parse_keyword_display_string(display_string)
             
             self.keyword_text_var.set(keyword_obj['text'])
-            self.lang_var.set(self.LANG_MAP_INV.get(keyword_obj['lang'], "Generic"))
+            self.lang_var.set(self.LANG_MAP_INV.get(keyword_obj['lang'], "Traditional Chinese"))
+            self.keyword_num_var.set(str(keyword_obj.get('num', 1)))
+            self.button_id_var.set(keyword_obj.get('button_id', ''))
 
             # Toggle filter logic
             if self.active_filter_keyword == keyword_obj['text']:
@@ -887,7 +909,6 @@ class TaggingAutomationApp:
             launch_options = {
                 "headless": False,
                 "args": [],
-                "user_data_dir": user_data_dir
             }
             
             if os.path.exists(chrome_path):
@@ -987,7 +1008,9 @@ class TaggingAutomationApp:
         selected_index = selection_indices[0]
         new_text = self.keyword_text_var.get().strip()
         new_lang_display = self.lang_var.get()
-        new_lang_short = self.LANG_MAP.get(new_lang_display, "gen")
+        new_lang_short = self.LANG_MAP.get(new_lang_display, "tc")
+        new_num = self.keyword_num_var.get().strip()
+        new_button_id = self.button_id_var.get().strip()
 
         if not new_text:
             messagebox.showwarning("Invalid Text", "Keyword text cannot be empty.")
@@ -998,11 +1021,14 @@ class TaggingAutomationApp:
             self.is_updating_ui = False
             return
 
-        # Check for duplicates (excluding the item being edited)
+        # Check for duplicates (text, lang, num) excluding the item being edited
         all_keyword_objects = self._get_keyword_objects()
         for i, obj in enumerate(all_keyword_objects):
-            if i != selected_index and obj['text'] == new_text:
-                messagebox.showwarning("Duplicate Keyword", f"The keyword '{new_text}' already exists.")
+            if i != selected_index and \
+               obj['text'] == new_text and \
+               obj['lang'] == new_lang_short and \
+               obj.get('num', 1) == int(new_num):
+                messagebox.showwarning("Duplicate Keyword", f"The keyword with this text, lang, and num already exists.")
                 # Revert to original text
                 self.is_updating_ui = True
                 original_obj = self._parse_keyword_display_string(self.keyword_listbox.get(selected_index))
@@ -1018,7 +1044,8 @@ class TaggingAutomationApp:
         if " (" in original_display:
             status_part = " (" + original_display.split(' (')[-1]
         
-        new_display_string = f"[{new_lang_short}] {new_text}{status_part}"
+        id_part = f" {{{new_button_id}}}" if new_button_id else ""
+        new_display_string = f"[{new_num}] [{new_lang_short}] {new_text}{id_part}{status_part}"
         
         self.keyword_listbox.delete(selected_index)
         self.keyword_listbox.insert(selected_index, new_display_string)
@@ -1032,18 +1059,23 @@ class TaggingAutomationApp:
         """Adds a single keyword from the entry box with its language attribute."""
         keyword_text = self.keyword_text_var.get().strip()
         keyword_lang_display = self.lang_var.get()
-        keyword_lang_short = self.LANG_MAP.get(keyword_lang_display, "gen")
+        keyword_lang_short = self.LANG_MAP.get(keyword_lang_display, "tc")
+        keyword_num = self.keyword_num_var.get().strip()
+        button_id = self.button_id_var.get().strip()
         
         if not keyword_text:
             return
 
-        # Prevent duplicates
-        existing_texts = self._get_raw_keywords()
-        if keyword_text in existing_texts:
-            messagebox.showwarning("Duplicate", "This keyword already exists.")
-            return
+        # Prevent duplicates based on text, lang, and num
+        new_keyword_obj = {'text': keyword_text, 'lang': keyword_lang_short, 'num': int(keyword_num)}
+        all_keyword_objects = self._get_keyword_objects()
+        for obj in all_keyword_objects:
+            if obj['text'] == new_keyword_obj['text'] and obj['lang'] == new_keyword_obj['lang'] and obj.get('num', 1) == new_keyword_obj['num']:
+                messagebox.showwarning("Duplicate", "This exact keyword (text, lang, num) already exists.")
+                return
 
-        display_string = f"[{keyword_lang_short}] {keyword_text}"
+        id_part = f" {{{button_id}}}" if button_id else ""
+        display_string = f"[{keyword_num}] [{keyword_lang_short}] {keyword_text}{id_part}"
         self.keyword_listbox.insert(tk.END, display_string)
         
         # Clear inputs for next entry
@@ -1110,17 +1142,38 @@ class TaggingAutomationApp:
             self._save_keyword_state()
 
     def _parse_keyword_display_string(self, display_string):
-        """Parses '[lang] text (status)' into a dictionary with text and lang."""
+        """Parses '[num] [lang] text {button_id} (status)' into a dictionary."""
         try:
-            # Format: [lang] text (status) OR [lang] text
+            # New format: [num] [lang] text {button_id} (status)
+            num_part, rest = display_string.split('] [', 1)
+            num = int(num_part[1:])
+            
+            lang_part, text_part = rest.split('] ', 1)
+            lang = lang_part
+            
+            # Extract button_id if present
+            button_id = ""
+            if ' {' in text_part and '}' in text_part:
+                text, _, remainder = text_part.partition(' {')
+                button_id, _, _ = remainder.partition('}')
+            else:
+                text = text_part.split(' (')[0].strip()
+
+            return {'text': text.strip(), 'lang': lang.strip(), 'num': num, 'button_id': button_id}
+        except (ValueError, IndexError):
+            return self._parse_legacy_keyword_string(display_string)
+
+    def _parse_legacy_keyword_string(self, display_string):
+        """Fallback parser for old format '[lang] text (status)' or just 'text'."""
+        try:
+            # Try parsing '[lang] text' format
             parts = display_string.split('] ')
             lang = parts[0][1:]
-            text_and_status = parts[1]
-            text = text_and_status.split(' (')[0]
-            return {'text': text.strip(), 'lang': lang.strip()}
+            text = parts[1].split(' (')[0]
+            return {'text': text.strip(), 'lang': lang.strip(), 'num': 1, 'button_id': ''} # Default num and button_id
         except IndexError:
-            # Fallback for unexpected format, treat whole string as text
-            return {'text': display_string, 'lang': 'gen'}
+            # If that fails, assume it's just the keyword text
+            return {'text': display_string.split(' (')[0].strip(), 'lang': 'tc', 'num': 1, 'button_id': ''}
 
     def _get_keyword_objects(self):
         """Gets a list of all keyword objects from the listbox."""
@@ -1132,12 +1185,14 @@ class TaggingAutomationApp:
 
     def _parse_url_display_string(self, display_string):
         try:
-            parts = display_string.split('] ')
-            lang = parts[0][1:]
-            url = parts[1]
-            return {'url': url.strip(), 'lang': lang.strip()}
-        except IndexError:
-            return {'url': display_string, 'lang': 'gen'}
+            num_part, rest = display_string.split('] [', 1)
+            num = int(num_part[1:])
+            lang_part, url_part = rest.split('] ', 1)
+            lang = lang_part
+            url = url_part
+            return {'url': url.strip(), 'lang': lang.strip(), 'num': num}
+        except (ValueError, IndexError):
+            return {'url': display_string, 'lang': 'tc', 'num': 1}
 
     def _save_keyword_state(self):
         """Saves the current keyword object list to the undo stack."""
@@ -1150,7 +1205,8 @@ class TaggingAutomationApp:
         """Restores the keyword listbox from a given state of keyword objects."""
         self.keyword_listbox.delete(0, tk.END)
         for keyword_obj in state:
-            display_string = f"[{keyword_obj['lang']}] {keyword_obj['text']}"
+            id_part = f" {{{keyword_obj['button_id']}}}" if keyword_obj.get('button_id') else ""
+            display_string = f"[{keyword_obj.get('num', 1)}] [{keyword_obj['lang']}] {keyword_obj['text']}{id_part}"
             self.keyword_listbox.insert(tk.END, display_string)
         self._perform_matching_and_update_list()
         self._refresh_log_view()
@@ -1204,10 +1260,11 @@ class TaggingAutomationApp:
     def _perform_matching_and_update_list(self):
         """Core function to match logs against keywords and update the listbox UI."""
         self.keyword_matches = {}
+
+        # 1. Get the current view and selection index
+        top_fraction, _ = self.keyword_listbox.yview()
         selection_indices = self.keyword_listbox.curselection()
-        selected_obj = None
-        if selection_indices:
-            selected_obj = self._parse_keyword_display_string(self.keyword_listbox.get(selection_indices[0]))
+        selected_index = selection_indices[0] if selection_indices else -1
 
         keyword_objects = self._get_keyword_objects()
 
@@ -1217,24 +1274,27 @@ class TaggingAutomationApp:
 
         self.keyword_listbox.delete(0, tk.END)
         
-        new_selection_index = -1
         for i, obj in enumerate(keyword_objects):
             keyword_text = obj['text']
             keyword_lang = obj['lang']
+            keyword_num = obj.get('num', 1)
+            button_id = obj.get('button_id', '')
             
             matched_logs = self.keyword_matches.get(keyword_text, [])
             status = self._get_status_for_keyword(matched_logs)
 
-            display_string = f"[{keyword_lang}] {keyword_text}"
+            id_part = f" {{{button_id}}}" if button_id else ""
+            display_string = f"[{keyword_num}] [{keyword_lang}] {keyword_text}{id_part}"
             if status in ("PASS", "FAILED"):
                 display_string += f" ({status})"
 
             self.keyword_listbox.insert(tk.END, display_string)
-            if selected_obj and obj['text'] == selected_obj['text'] and obj['lang'] == selected_obj['lang']:
-                new_selection_index = i
+
+        # Restore selection and view
+        if selected_index != -1:
+            self.keyword_listbox.selection_set(selected_index)
         
-        if new_selection_index != -1:
-            self.keyword_listbox.selection_set(new_selection_index)
+        self.keyword_listbox.yview_moveto(top_fraction)
 
     def save_session(self):
         """Saves the current URLs and keyword objects to a JSON file."""
@@ -1283,11 +1343,13 @@ class TaggingAutomationApp:
             if 'urls' in session_data and isinstance(session_data['urls'], list):
                 for item in session_data['urls']:
                     if isinstance(item, dict) and 'url' in item and 'lang' in item:
-                        loaded_urls.append(item) # New format
+                        if 'num' not in item:
+                            item['num'] = 1 # Backward compatibility
+                        loaded_urls.append(item)
                     elif isinstance(item, str):
-                        loaded_urls.append({'url': item, 'lang': 'gen'}) # Old format
+                        loaded_urls.append({'url': item, 'lang': 'tc', 'num': 1}) # Old format
             elif 'url' in session_data: # Even older format
-                loaded_urls.append({'url': session_data['url'], 'lang': 'gen'})
+                loaded_urls.append({'url': session_data['url'], 'lang': 'tc', 'num': 1})
             self.update_urls(loaded_urls)
             
             # --- Load Keywords (with backward compatibility) ---
@@ -1295,10 +1357,13 @@ class TaggingAutomationApp:
                 self.keyword_listbox.delete(0, tk.END)
                 for item in session_data['keywords']:
                     if isinstance(item, dict) and 'text' in item and 'lang' in item:
-                        display_string = f"[{item['lang']}] {item['text']}"
+                        item.setdefault('num', 1) # Backward compatibility
+                        item.setdefault('button_id', '') # Backward compatibility
+                        id_part = f" {{{item['button_id']}}}" if item['button_id'] else ""
+                        display_string = f"[{item['num']}] [{item['lang']}] {item['text']}{id_part}"
                         self.keyword_listbox.insert(tk.END, display_string)
                     elif isinstance(item, str):
-                        display_string = f"[gen] {item.strip()}"
+                        display_string = f"[1] [tc] {item.strip()}"
                         self.keyword_listbox.insert(tk.END, display_string)
                 
                 self._perform_matching_and_update_list()
@@ -1336,7 +1401,12 @@ class URLManager(tk.Toplevel):
         self.url_entry = ttk.Entry(top_row, textvariable=self.url_text_var)
         self.url_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        self.url_lang_var = tk.StringVar(value="Generic")
+        self.url_num_var = tk.StringVar(value="1")
+        ttk.Label(top_row, text="Num:").pack(side=tk.LEFT, padx=(5,0))
+        self.num_entry = ttk.Entry(top_row, textvariable=self.url_num_var, width=5)
+        self.num_entry.pack(side=tk.LEFT, padx=(0,5))
+
+        self.url_lang_var = tk.StringVar(value="Traditional Chinese")
         lang_options = list(self.app.LANG_MAP.keys())
         self.lang_combobox = ttk.Combobox(top_row, textvariable=self.url_lang_var, values=lang_options, state="readonly", width=20)
         self.lang_combobox.pack(side=tk.LEFT, padx=5)
@@ -1353,7 +1423,7 @@ class URLManager(tk.Toplevel):
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.url_listbox.config(yscrollcommand=scrollbar.set)
         for url_obj in urls:
-            self.url_listbox.insert(tk.END, f"[{url_obj['lang']}] {url_obj['url']}")
+            self.url_listbox.insert(tk.END, f"[{url_obj.get('num', 1)}] [{url_obj['lang']}] {url_obj['url']}")
 
         # --- Bindings ---
         self.url_listbox.bind("<ButtonRelease-1>", self._on_url_click)
@@ -1387,12 +1457,15 @@ class URLManager(tk.Toplevel):
 
     def _parse_url_string(self, display_string):
         try:
-            parts = display_string.split('] ')
-            lang = parts[0][1:]
-            url = parts[1]
-            return {'url': url.strip(), 'lang': lang.strip()}
-        except IndexError:
-            return {'url': display_string, 'lang': 'gen'}
+            num_part, rest = display_string.split('] [', 1)
+            num = int(num_part[1:])
+            lang_part, url_part = rest.split('] ', 1)
+            lang = lang_part
+            url = url_part
+            return {'url': url.strip(), 'lang': lang.strip(), 'num': num}
+        except (ValueError, IndexError):
+            # Fallback for old format or direct input
+            return {'url': display_string, 'lang': 'tc', 'num': 1}
 
     def _get_url_objects(self):
         return [self._parse_url_string(self.url_listbox.get(i)) for i in range(self.url_listbox.size())]
@@ -1404,7 +1477,8 @@ class URLManager(tk.Toplevel):
             display_string = self.url_listbox.get(selection_indices[0])
             url_obj = self._parse_url_string(display_string)
             self.url_text_var.set(url_obj['url'])
-            self.url_lang_var.set(self.app.LANG_MAP_INV.get(url_obj['lang'], "Generic"))
+            self.url_lang_var.set(self.app.LANG_MAP_INV.get(url_obj['lang'], "Traditional Chinese"))
+            self.url_num_var.set(str(url_obj.get('num', 1)))
         self.is_updating_ui = False
 
     def _handle_url_update(self, *args):
@@ -1416,12 +1490,13 @@ class URLManager(tk.Toplevel):
 
         selected_index = selection_indices[0]
         new_url = self.url_text_var.get().strip()
-        new_lang = self.app.LANG_MAP.get(self.url_lang_var.get(), "gen")
+        new_lang = self.app.LANG_MAP.get(self.url_lang_var.get(), "tc")
+        new_num = self.url_num_var.get().strip()
 
         if not new_url:
             return # Don't update if URL is empty
 
-        new_display_string = f"[{new_lang}] {new_url}"
+        new_display_string = f"[{new_num}] [{new_lang}] {new_url}"
         self.url_listbox.delete(selected_index)
         self.url_listbox.insert(selected_index, new_display_string)
         self.url_listbox.selection_set(selected_index)
@@ -1429,9 +1504,11 @@ class URLManager(tk.Toplevel):
 
     def add_url(self):
         url = self.url_text_var.get().strip()
-        lang = self.app.LANG_MAP.get(self.url_lang_var.get(), "gen")
+        lang = self.app.LANG_MAP.get(self.url_lang_var.get(), "tc")
+        num = self.url_num_var.get().strip()
+        num = self.url_num_var.get().strip()
         if url:
-            display_string = f"[{lang}] {url}"
+            display_string = f"[{num}] [{lang}] {url}"
             self.url_listbox.insert(tk.END, display_string)
             self.url_text_var.set("")
             self._save_url_state()
@@ -1461,12 +1538,12 @@ class URLManager(tk.Toplevel):
             return # Clipboard is empty or doesn't contain text
 
         current_urls = {obj['url'] for obj in self._get_url_objects()}
-        lang = self.app.LANG_MAP.get(self.url_lang_var.get(), "gen")
+        lang = self.app.LANG_MAP.get(self.url_lang_var.get(), "tc")
         added = False
         for line in clipboard_content.splitlines():
             url = line.strip()
             if url and url not in current_urls:
-                display_string = f"[{lang}] {url}"
+                display_string = f"[{num}] [{lang}] {url}"
                 self.url_listbox.insert(tk.END, display_string)
                 current_urls.add(url) # Avoid duplicates within the same paste
                 added = True
